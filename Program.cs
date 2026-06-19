@@ -1,13 +1,15 @@
 ﻿using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
-namespace Dotnet9DiCommandRouter;
+namespace DiResolverChallenge;
 
+// --- Abstractions ---
 public interface IOperation
 {
     string Execute();
 }
 
+// --- Implementations ---
 public sealed class OperationA : IOperation
 {
     public string Execute() => "OperationA executed";
@@ -18,54 +20,51 @@ public sealed class OperationB : IOperation
     public string Execute() => "OperationB executed";
 }
 
-public sealed class OperationResolver
+// --- Senior Level Resolver (No Service Locator Anti-Pattern) ---
+// ما اینجا از Keyed Services استفاده می‌کنیم که در دات‌نت 8 و 9 معرفی شده است.
+public sealed class OperationResolver([FromKeyedServices("OperationFactory")] Func<string, IOperation?> factory)
 {
-    private readonly IServiceProvider _serviceProvider;
-
-    public OperationResolver(IServiceProvider serviceProvider)
-    {
-        _serviceProvider = serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
-    }
-
     public IOperation Resolve(string input)
     {
-        if (string.IsNullOrWhiteSpace(input))
-            throw new ArgumentException("Input cannot be null or empty.", nameof(input));
-
-        return input.Trim().ToLowerInvariant() switch
-        {
-            "a" => _serviceProvider.GetRequiredService<OperationA>(),
-            "b" => _serviceProvider.GetRequiredService<OperationB>(),
-            _ => throw new ArgumentOutOfRangeException(nameof(input), input, "Only 'a' or 'b' are valid inputs.")
-        };
+        var operation = factory(input?.ToLowerInvariant() ?? string.Empty);
+        
+        return operation ?? throw new ArgumentException($"Operation '{input}' is not supported.");
     }
 }
 
-public sealed class Processor
+public sealed class Processor(OperationResolver resolver)
 {
-    private readonly OperationResolver _resolver;
-
-    public Processor(OperationResolver resolver)
-    {
-        _resolver = resolver ?? throw new ArgumentNullException(nameof(resolver));
-    }
-
     public void Process(string input)
     {
-        var operation = _resolver.Resolve(input);
-        Console.WriteLine(operation.Execute());
+        var op = resolver.Resolve(input);
+        Console.WriteLine(op.Execute());
     }
 }
 
+// --- Composition Root ---
 public static class Program
 {
     public static void Main(string[] args)
     {
-        using IHost host = Host.CreateDefaultBuilder(args)
+        var host = Host.CreateDefaultBuilder(args)
             .ConfigureServices(services =>
             {
+                // 1. ثبت پیاده‌سازی‌ها به صورت معمولی
                 services.AddTransient<OperationA>();
                 services.AddTransient<OperationB>();
+
+                // 2. استفاده از یک Delegate Factory به عنوان Keyed Service
+                // این بخش هوشمندانه‌ترین قسمت کد برای یک معمار دات‌نت است.
+                services.AddKeyedSingleton<Func<string, IOperation?>>("OperationFactory", (sp, key) => 
+                {
+                    return (input) => input switch
+                    {
+                        "a" => sp.GetRequiredService<OperationA>(),
+                        "b" => sp.GetRequiredService<OperationB>(),
+                        _ => null
+                    };
+                });
+
                 services.AddTransient<OperationResolver>();
                 services.AddTransient<Processor>();
             })
@@ -78,11 +77,11 @@ public static class Program
 
         try
         {
-            processor.Process(userInput!);
+            processor.Process(userInput ?? string.Empty);
         }
         catch (Exception ex)
         {
-            Console.WriteLine(ex.Message);
+            Console.WriteLine($"Error: {ex.Message}");
         }
     }
 }
